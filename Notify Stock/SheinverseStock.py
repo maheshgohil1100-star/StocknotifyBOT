@@ -83,82 +83,75 @@ def save_state(women, men):
         json.dump({"women": women, "men": men}, f)
 
 def main():
-    print("--- SHEINVERSE LIVE STOCK MONITOR ---")
-    
     # Start dummy server for hosting port check
     threading.Thread(target=run_dummy_server, daemon=True).start()
     
-    # Load last seen state
-    state = load_state()
+    print("--- SHEINVERSE LIVE STOCK MONITOR ---")
     
-    # FETCH LATEST RIGHT NOW to prevent "fake" increase on restart
-    print("Syncing with website...")
-    w_now, m_now = get_stock()
+    # SYSTEM SYNC: On startup, we ALWAYS get the latest stock 
+    # and set it as the starting point. This stops DUPLICATE alerts on restarts.
+    print("Syncing with website for the first time...")
+    w_start, m_start = get_stock()
     
-    if w_now is not None:
-        # If we have a saved state, but website is currently different, 
-        # we check if it's an increase. If it's the SAME or less, we update state silently.
-        if state is None:
-            print(f"Initializing baseline: W:{w_now}, M:{m_now}")
-            save_state(w_now, m_now)
-            state = {"women": w_now, "men": m_now}
-        else:
-            # Prevent re-alerting if numbers hasn't changed since last crash/restart
-            if w_now <= state["women"] and m_now <= state["men"]:
-                print(f"Sync complete. No new stock since last session. (W:{w_now}, M:{m_now})")
-                state = {"women": w_now, "men": m_now}
-                save_state(w_now, m_now)
-            else:
-                print(f"Resuming. Last known: W:{state['women']}, M:{state['men']}. Web has: W:{w_now}, M:{m_now}")
+    if w_start is not None:
+        state = {"women": w_start, "men": m_start}
+        save_state(w_start, m_start)
+        print(f"Starting Baseline Set: Women={w_start}, Men={m_start}")
     else:
-        # Fallback if website fetch fails on start
-        if state is None:
-            state = {"women": 0, "men": 0}
+        # If website fetch fails on start, try loading from file or use 0
+        saved = load_state()
+        state = saved if saved else {"women": 0, "men": 0}
+        print("Starting with last known or zero state.")
 
-    print(f"Monitoring started at {time.strftime('%H:%M:%S')}")
+    print(f"Monitoring active. Refresh: 20s. Started at {time.strftime('%H:%M:%S')}")
 
     while True:
-        # Silent Refresh
+        # 1. Refresh Website
         women, men = get_stock()
         if women is None:
-            time.sleep(30)
+            time.sleep(20)
             continue
 
-        old_women = state["women"]
-        old_men = state["men"]
+        old_w = state["women"]
+        old_m = state["men"]
 
-        # Alert ONLY if stock INCREASED from the literal last seen value
-        if women > old_women or men > old_men:
+        # 2. Check for INCREASE ONLY
+        if women > old_w or men > old_m:
             
-            # Use OLD value as "Current"
-            cur_w = old_women
-            cur_m = old_men
+            # Amount BEFORE the stock addition
+            before_w = old_w
+            before_m = old_m
             
-            # Calculate exactly what was ADDED
-            diff_w = women - cur_w
-            diff_m = men - cur_m
+            # Amount ADDED
+            added_w = max(0, women - before_w)
+            added_m = max(0, men - before_m)
             
+            # 3. Create Unique Alert Message
             message = "<b>✨ SHEINVERSE STOCK ALERT ✨</b>\n\n"
-            message += f"👗 Women: {cur_w} ➜ <b>Now {women}</b> (+{max(0, diff_w)}) 📦\n"
-            message += f"👕 Men: {cur_m} ➜ <b>Now {men}</b> (+{max(0, diff_m)}) 📦\n"
+            
+            # Format: Before ➜ Now (After) (+Added)
+            message += f"👗 <b>Women:</b> {before_w} ➜ <b>Now {women}</b> (+{added_w}) 📦\n"
+            message += f"👕 <b>Men:</b> {before_m} ➜ <b>Now {men}</b> (+{added_m}) 📦\n"
+            
             message += f"\n<a href='{URL}'>Visit Store</a>"
             
-            print(f"[{time.strftime('%H:%M:%S')}] STOCK INCREASE DETECTED! Sending alert...")
+            print(f"[{time.strftime('%H:%M:%S')}] New Stock! W:{women}, M:{men}. Sending alert...")
             send_telegram(message)
             
-            # UPDATE state so the next 'Current' is this new 'Now'
+            # 4. Update the baseline so we don't alert for this same number again
             state["women"] = women
             state["men"] = men
             save_state(women, men)
             
-        elif women < old_women or men < old_men:
-            # If stock decreases, update state SILENTLY (No message)
-            print(f"[{time.strftime('%H:%M:%S')}] Stock decreased. Updated baseline to W:{women}, M:{men}")
+        elif women < old_w or men < old_m:
+            # Silent update for decreases (keeps 'Before' accurate for next refill)
+            print(f"[{time.strftime('%H:%M:%S')}] Stock sold/decreased. New base: W:{women}, M:{men}")
             state["women"] = women
             state["men"] = men
             save_state(women, men)
         else:
-            print(f"[{time.strftime('%H:%M:%S')}] Checked Website. Current Stock: W:{women}, M:{men}")
+            # LIVE MONITORING HEARTBEAT (Shows on Render console)
+            print(f"[{time.strftime('%H:%M:%S')}] Active & Monitoring... Current Stock: W:{women}, M:{men}")
 
         time.sleep(20) 
 
