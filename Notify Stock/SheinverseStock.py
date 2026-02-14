@@ -91,20 +91,34 @@ def main():
     # Load last seen state
     state = load_state()
     
-    if state is None:
-        print("Fetching initial state...")
-        w, m = get_stock()
-        if w is not None:
-            save_state(w, m)
-            state = {"women": w, "men": m}
+    # FETCH LATEST RIGHT NOW to prevent "fake" increase on restart
+    print("Syncing with website...")
+    w_now, m_now = get_stock()
+    
+    if w_now is not None:
+        # If we have a saved state, but website is currently different, 
+        # we check if it's an increase. If it's the SAME or less, we update state silently.
+        if state is None:
+            print(f"Initializing baseline: W:{w_now}, M:{m_now}")
+            save_state(w_now, m_now)
+            state = {"women": w_now, "men": m_now}
         else:
+            # Prevent re-alerting if numbers hasn't changed since last crash/restart
+            if w_now <= state["women"] and m_now <= state["men"]:
+                print(f"Sync complete. No new stock since last session. (W:{w_now}, M:{m_now})")
+                state = {"women": w_now, "men": m_now}
+                save_state(w_now, m_now)
+            else:
+                print(f"Resuming. Last known: W:{state['women']}, M:{state['men']}. Web has: W:{w_now}, M:{m_now}")
+    else:
+        # Fallback if website fetch fails on start
+        if state is None:
             state = {"women": 0, "men": 0}
 
-    print(f"Initial State: Women={state['women']}, Men={state['men']}")
     print(f"Monitoring started at {time.strftime('%H:%M:%S')}")
 
     while True:
-        print(f"[{time.strftime('%H:%M:%S')}] --- Refreshing Website Data ---")
+        # Silent Refresh
         women, men = get_stock()
         if women is None:
             time.sleep(30)
@@ -113,7 +127,7 @@ def main():
         old_women = state["women"]
         old_men = state["men"]
 
-        # Alert ONLY if stock INCREASED
+        # Alert ONLY if stock INCREASED from the literal last seen value
         if women > old_women or men > old_men:
             
             # Use OLD value as "Current"
