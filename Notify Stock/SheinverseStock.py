@@ -40,25 +40,38 @@ URL = "https://www.sheinindia.in/c/sverse-5939-37961"
 STATE_FILE = "stock_state_live.json"
 
 def get_stock():
-    try:
-        r = requests.get(URL, impersonate="chrome110", timeout=30)
-        if r.status_code != 200:
-            print(f"[{time.strftime('%H:%M:%S')}] Fetch failed: {r.status_code}")
-            return None, None
+    # Try multiple times if fetch fails
+    for attempt in range(3):
+        try:
+            r = requests.get(URL, impersonate="chrome110", timeout=30)
+            if r.status_code != 200:
+                print(f"[{time.strftime('%H:%M:%S')}] Attempt {attempt+1} failed: {r.status_code}")
+                continue
+                
+            html = r.text
             
-        html = r.text
-        
-        # Accurate extraction using JSON patterns
-        women_match = re.search(r'"name"\s*:\s*"Women"\s*,\s*"count"\s*:\s*(\d+)', html)
-        men_match = re.search(r'"name"\s*:\s*"Men"\s*,\s*"count"\s*:\s*(\d+)', html)
-        
-        women = int(women_match.group(1)) if women_match else 0
-        men = int(men_match.group(1)) if men_match else 0
-        
-        return women, men
-    except Exception as e:
-        print(f"[{time.strftime('%H:%M:%S')}] Error: {e}")
-        return None, None
+            # Target the Gender Filter specifically for better accuracy
+            # These are usually inside the filter search results JSON
+            women_match = re.search(r'"genderfilter-Women".*?"count"\s*:\s*(\d+)', html)
+            men_match = re.search(r'"genderfilter-Men".*?"count"\s*:\s*(\d+)', html)
+            
+            # Fallback to old regex if specific one fails
+            if not women_match:
+                women_match = re.search(r'"name"\s*:\s*"Women"\s*,\s*"count"\s*:\s*(\d+)', html)
+            if not men_match:
+                men_match = re.search(r'"name"\s*:\s*"Men"\s*,\s*"count"\s*:\s*(\d+)', html)
+            
+            women = int(women_match.group(1)) if women_match else 0
+            men = int(men_match.group(1)) if men_match else 0
+            
+            if women > 0 or men > 0: # Ensure we got something
+                return women, men
+                
+        except Exception as e:
+            print(f"[{time.strftime('%H:%M:%S')}] Attempt {attempt+1} Error: {e}")
+            time.sleep(2)
+            
+    return None, None
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -88,6 +101,12 @@ def main():
     
     print("--- SHEINVERSE LIVE STOCK MONITOR ---")
     
+    # Random startup delay to prevent synchronized duplicates on Render
+    import random
+    startup_wait = random.randint(2, 8)
+    print(f"Starting in {startup_wait}s (Anti-collision delay)...")
+    time.sleep(startup_wait)
+
     # SYSTEM SYNC: On startup, we ALWAYS get the latest stock 
     # and set it as the starting point. This stops DUPLICATE alerts on restarts.
     print("Syncing with website for the first time...")
@@ -126,22 +145,20 @@ def main():
             added_w = max(0, women - before_w)
             added_m = max(0, men - before_m)
             
-            # 3. Create Unique Alert Message
-            message = "<b>✨ SHEINVERSE STOCK ALERT ✨</b>\n\n"
+            # 3. Update the baseline IMMEDIATELY (Before sending telegram)
+            # This is CRITICAL to prevent duplicate messages if the telegram call lags.
+            state["women"] = women
+            state["men"] = men
+            save_state(women, men)
             
-            # Format: Before ➜ Now (After) (+Added)
+            # 4. Create Alert Message
+            message = "<b>✨ SHEINVERSE STOCK ALERT ✨</b>\n\n"
             message += f"👗 <b>Women:</b> {before_w} ➜ <b>Now {women}</b> (+{added_w}) 📦\n"
             message += f"👕 <b>Men:</b> {before_m} ➜ <b>Now {men}</b> (+{added_m}) 📦\n"
-            
             message += f"\n<a href='{URL}'>Visit Store</a>"
             
             print(f"[{time.strftime('%H:%M:%S')}] New Stock! W:{women}, M:{men}. Sending alert...")
             send_telegram(message)
-            
-            # 4. Update the baseline so we don't alert for this same number again
-            state["women"] = women
-            state["men"] = men
-            save_state(women, men)
             
         elif women < old_w or men < old_m:
             # Silent update for decreases (keeps 'Before' accurate for next refill)
